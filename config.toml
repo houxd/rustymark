@@ -1,0 +1,7 @@
+text = []
+font_path = "./msyh.ttc"
+image_path = "./tests.png"
+angle = -6.0
+color = [0, 0, 0, 100]
+margin = 10
+alpha = 0
