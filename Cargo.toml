@@ -1,15 +1,16 @@
 [package]
-name = "Rustymark"
-version = "0.1.0"
+name = "rustymark"
+version = "0.2.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 anyhow = "1.0.79"
+clap = {version = "4.4", features = ["derive"]}
 config = "0.14.0"
 image = "0.24.8"
 imageproc = "0.23.0"
 rusttype = "0.9.3"
-serde = { version = "1.0.196", features = ["derive"] }
-toml = "0.8.10"
+serde = { version = "1.0.219", features = ["derive"] }
+toml = "0.8.20"

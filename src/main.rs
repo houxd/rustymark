@@ -1,85 +1,81 @@
 use std::fs;
-use std::io::Write;
 
-use config::{Config, File};
+use anyhow::Result;
+use clap::Parser;
+use image::imageops::overlay;
 use image::{ImageBuffer, Rgba, RgbaImage};
-use image::imageops::{overlay};
 use imageproc::definitions::Image;
 use imageproc::drawing::{draw_text_mut, text_size};
-use imageproc::geometric_transformations::{Interpolation, rotate_about_center};
+use imageproc::geometric_transformations::{rotate_about_center, Interpolation};
 use rusttype::{Font, Scale};
 use serde::{Deserialize, Serialize};
-use anyhow::{Result};
 
-const WHITE: Rgba<u8> = Rgba([255, 255, 255, 255]);
-const BLACK: Rgba<u8> = Rgba([0, 0, 0, 255]);
 const TRANSPARENT: Rgba<u8> = Rgba([0, 0, 0, 0]);
+fn main() -> Result<()> {
+    let mut config: AppConfig = AppConfig::parse();
 
-fn main() {
-    let mut config = read_or_create_config("./config.toml".to_string()).unwrap();
-    config.angle = std::f32::consts::PI / config.angle;
-    let watermark = gen_watermark(config.clone());
+    if config.text.is_empty() {
+        return Err(anyhow::anyhow!("没有提供水印文本，请使用 --text 参数"));
+    }
 
+    config.rotate = std::f32::consts::PI / config.rotate;
+    let watermark = gen_watermark(&config);
 
-    let covered = cover_image_with_watermark(config.image_path, watermark);
+    let covered = cover_image_with_watermark(config.input, watermark);
 
-    let output_path = "watermarked.png";
-    covered.save(output_path).expect("Failed to save image");
+    covered.save(&config.output).expect("Failed to save image");
+
+    println!("水印已添加，输出文件: {}", &config.output);
+
+    Ok(())
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug, Default)]
+#[derive(Clone, Serialize, Deserialize, Debug, Default, clap::Parser)]
+#[command(
+    version = env!("CARGO_PKG_VERSION"),
+    author = env!("CARGO_PKG_AUTHORS"),
+    about = env!("CARGO_PKG_DESCRIPTION"),
+)]
 struct AppConfig {
+    #[arg(short, long)]
     text: Vec<String>,
-    font_path: String,
-    image_path: String,
-    angle: f32,
+
+    #[arg(short, long, default_value = "./msyh.ttc")]
+    font: String,
+
+    #[arg(short, long, default_value = "./input.png")]
+    input: String,
+
+    #[arg(short, long, default_value = "./output.png")]
+    output: String,
+
+    #[arg(short, long, default_value_t = -6.0)]
+    rotate: f32,
+
+    #[arg(short, long, value_parser = parse_color, default_value = "0,0,0,100")]
     color: [u8; 4],
+
+    #[arg(short, long, default_value_t = 10)]
     margin: u32,
+
+    #[arg(short, long, default_value_t = 0)]
     alpha: u8,
 }
 
-impl AppConfig {
-    fn new() -> AppConfig {
-        AppConfig {
-            text: Vec::<String>::new(),
-            font_path: "./msyh.ttc".to_string(),
-            image_path: "./tests.png".to_string(),
-            angle: -6.0,
-            color: [0, 0, 0, 100],
-            margin: 10,
-            alpha: 0,
-        }
+fn parse_color(s: &str) -> Result<[u8; 4], String> {
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() != 4 {
+        return Err(format!("颜色格式应为 'R,G,B,A'，但得到 '{}'", s));
     }
 
-    fn from_file(path: String) -> Result<AppConfig> {
-        let config_ = Config::builder()
-            .add_source(File::with_name(&*path))
-            .build()?;
-
-        let config: AppConfig = config_.try_deserialize()?;
-
-        Ok(config)
+    let mut color = [0; 4];
+    for (i, part) in parts.iter().enumerate() {
+        color[i] = part
+            .parse::<u8>()
+            .map_err(|_| format!("无法将 '{}' 解析为 0-255 之间的数字", part))?;
     }
-}
 
-fn read_or_create_config(path: String) -> Result<AppConfig> {
-    let config = match AppConfig::from_file(path.clone()) {
-        Ok(c) => c,
-        Err(_) => {
-            let config = AppConfig::new();
-            let context = toml::to_string(&config).unwrap();
-            create_config(context, path)?;
-            config
-        },
-    };
-
-    Ok(config)
-}
-
-fn create_config(context: String, path: String) -> Result<()> {
-    let mut file = fs::File::create(path)?;
-    file.write_all(context.as_bytes())?;
-    Ok(())
+    Ok(color)
 }
 
 fn cover_image_with_watermark(image_path: String, watermark: RgbaImage) -> RgbaImage {
@@ -90,15 +86,19 @@ fn cover_image_with_watermark(image_path: String, watermark: RgbaImage) -> RgbaI
 
     for i in 0..line {
         for j in 0..column {
-            overlay(&mut image, &watermark, (i * watermark.width()) as i64 - 60, (j * watermark.height()) as i64 - 40);
+            overlay(
+                &mut image,
+                &watermark,
+                (i * watermark.width()) as i64 - 60,
+                (j * watermark.height()) as i64 - 40,
+            );
         }
     }
 
     image
 }
 
-
-fn gen_watermark(config: AppConfig) -> RgbaImage {
+fn gen_watermark(config: &AppConfig) -> RgbaImage {
     let pic = gen_text_pic(config.clone());
     let rotated = rotate_image(pic, config.clone());
     cut_image(rotated, config.clone())
@@ -108,7 +108,6 @@ fn gen_text_pic(config: AppConfig) -> RgbaImage {
     let width = 1000;
     let height = 600;
 
-
     let mut img = ImageBuffer::from_pixel(width, height, TRANSPARENT);
 
     let inteded_text_height = 24.4;
@@ -117,7 +116,7 @@ fn gen_text_pic(config: AppConfig) -> RgbaImage {
         y: inteded_text_height,
     };
 
-    let font = fs::read(config.font_path).unwrap();
+    let font = fs::read(config.font).unwrap();
     let font = Font::try_from_vec(font).unwrap();
 
     let mut longest_text_start_x = 0;
@@ -127,14 +126,13 @@ fn gen_text_pic(config: AppConfig) -> RgbaImage {
 
     for text in config.text.iter() {
         let (text_width, text_height) = text_size(scale, &font, text);
-        let text_start_x = ((width-text_width as u32) / 2 ) as i32;
+        let text_start_x = ((width - text_width as u32) / 2) as i32;
         if text_start_x > longest_text_start_x {
             longest_text_start_x = text_width;
         }
         if text_start_x < shortest_text_start_x || shortest_text_start_x == 0 {
             shortest_text_start_x = text_width;
         }
-
 
         if text_height > total_text_height {
             total_text_height = text_height;
@@ -144,9 +142,23 @@ fn gen_text_pic(config: AppConfig) -> RgbaImage {
 
     for (index, text) in config.text.iter().enumerate() {
         let (_text_width, text_height) = text_size(scale, &font, text);
-        let final_height = get_start_height(height, config.text.len() as u32, index as u32, text_height as u32, margin);
+        let final_height = get_start_height(
+            height,
+            config.text.len() as u32,
+            index as u32,
+            text_height as u32,
+            margin,
+        );
         // 在图像上绘制文字
-        draw_text_mut(&mut img, Rgba([0, 0, 0, 100]), avg_text_width, final_height, scale, &font, text);
+        draw_text_mut(
+            &mut img,
+            Rgba([0, 0, 0, 100]),
+            avg_text_width,
+            final_height,
+            scale,
+            &font,
+            text,
+        );
     }
 
     img.save("watermark_raw.png").expect("Failed to save image");
@@ -154,9 +166,7 @@ fn gen_text_pic(config: AppConfig) -> RgbaImage {
 }
 
 fn rotate_image(img: RgbaImage, config: AppConfig) -> RgbaImage {
-    let rotated = rotate_about_center(&img, config.angle, Interpolation::Bicubic, TRANSPARENT);
-
-
+    let rotated = rotate_about_center(&img, config.rotate, Interpolation::Bicubic, TRANSPARENT);
 
     let output_path = "watermark_rotated.png";
     rotated.save(output_path).expect("Failed to save image");
@@ -200,7 +210,6 @@ fn cut_image(mut rotated: RgbaImage, config: AppConfig) -> RgbaImage {
         cutted_width -= empty_columns - 50;
     }
 
-
     let new_width = cutted_width - left;
     let new_height = cutted_height - top;
 
@@ -210,19 +219,18 @@ fn cut_image(mut rotated: RgbaImage, config: AppConfig) -> RgbaImage {
             let p = rotated.get_pixel(x, y);
             let d = p.clone();
 
-            *cutted.get_pixel_mut(x-left, y-top) = d;
+            *cutted.get_pixel_mut(x - left, y - top) = d;
         }
-    };
-
+    }
 
     let output_path = "watermark_cutted.png";
     cutted.save(output_path).expect("Failed to save image");
     cutted
 }
 
-fn get_start_height(height:u32, length: u32, index: u32, text_height: u32, margin: u32) -> i32 {
-    let start = (height-((text_height+margin)*length-margin)) / 2;
-    let offset = (text_height+margin) * index;
+fn get_start_height(height: u32, length: u32, index: u32, text_height: u32, margin: u32) -> i32 {
+    let start = (height - ((text_height + margin) * length - margin)) / 2;
+    let offset = (text_height + margin) * index;
     return (start + offset) as i32;
 }
 
